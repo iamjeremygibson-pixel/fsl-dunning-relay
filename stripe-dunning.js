@@ -2,14 +2,15 @@
 // Stripe  ->  this relay (verify + filter)  ->  GHL inbound webhook
 //
 // Env vars required in Vercel:
-//   STRIPE_WEBHOOK_SECRET  (test-mode signing secret first, live later)
+//   STRIPE_SECRET_KEY      (test-mode sk_test_... first, live later)
+//   STRIPE_WEBHOOK_SECRET  (test-mode signing secret whsec_... first, live later)
 //   GHL_WEBHOOK_URL        (your GHL Inbound Webhook trigger URL)
 
-import Stripe from "stripe";
+const Stripe = require("stripe");
 
 // We need the raw body to verify Stripe's signature, so disable Vercel's
 // automatic JSON body parsing for this route.
-export const config = {
+module.exports.config = {
   api: {
     bodyParser: false,
   },
@@ -26,19 +27,18 @@ async function readRawBody(req) {
 
 // Only these Stripe events matter to the dunning workflow
 const RELEVANT_EVENTS = new Set([
-  "invoice.payment_failed",   // a retry (or first charge) failed
-  "invoice.paid",             // the invoice got paid -> recovery
-  "invoice.payment_succeeded" // belt-and-suspenders recovery signal
+  "invoice.payment_failed",
+  "invoice.paid",
+  "invoice.payment_succeeded",
 ]);
 
-export default async function handler(req, res) {
+module.exports = async function handler(req, res) {
   if (req.method !== "POST") {
-    return res.status(405).send("Method Not Allowed");
+    // Allow a simple GET to confirm the function is alive
+    return res.status(200).json({ status: "FSL dunning relay is live" });
   }
 
-  const stripe = new Stripe(process.env.STRIPE_SECRET_KEY || "sk_placeholder", {
-    apiVersion: "2024-06-20",
-  });
+  const stripe = new Stripe(process.env.STRIPE_SECRET_KEY || "sk_placeholder");
 
   const sig = req.headers["stripe-signature"];
   const rawBody = await readRawBody(req);
@@ -51,20 +51,16 @@ export default async function handler(req, res) {
       process.env.STRIPE_WEBHOOK_SECRET
     );
   } catch (err) {
-    // Signature failed -> reject. Protects against spoofed calls.
     console.error("Signature verification failed:", err.message);
-    return res.status(400).send(`Webhook Error: ${err.message}`);
+    return res.status(400).send("Webhook Error: " + err.message);
   }
 
-  // Ignore everything we do not care about, but return 200 so Stripe
-  // does not keep retrying delivery of irrelevant events.
   if (!RELEVANT_EVENTS.has(event.type)) {
     return res.status(200).json({ received: true, ignored: event.type });
   }
 
   const invoice = event.data.object;
 
-  // Normalize recovery vs failure into one clean signal for GHL.
   const isRecovery =
     event.type === "invoice.paid" ||
     event.type === "invoice.payment_succeeded";
@@ -84,7 +80,6 @@ export default async function handler(req, res) {
       typeof invoice.subscription === "string" ? invoice.subscription : "",
   };
 
-  // Forward to GHL
   try {
     const ghlRes = await fetch(process.env.GHL_WEBHOOK_URL, {
       method: "POST",
@@ -92,7 +87,8 @@ export default async function handler(req, res) {
       body: JSON.stringify(payload),
     });
     if (!ghlRes.ok) {
-      console.error("GHL forward failed:", ghlRes.status, await ghlRes.text());
+      const text = await ghlRes.text();
+      console.error("GHL forward failed:", ghlRes.status, text);
       return res.status(502).json({ error: "GHL forward failed" });
     }
   } catch (err) {
@@ -101,4 +97,4 @@ export default async function handler(req, res) {
   }
 
   return res.status(200).json({ received: true, forwarded: payload.event });
-}
+};
