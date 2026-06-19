@@ -2,7 +2,6 @@
   "name": "fsl-dunning-relay",
   "version": "1.0.0",
   "description": "Relay Stripe failed-payment events to GHL dunning workflow",
-  "type": "module",
   "dependencies": {
     "stripe": "^16.0.0"
   }
