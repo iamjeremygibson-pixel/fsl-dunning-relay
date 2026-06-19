@@ -2,21 +2,12 @@
 // Stripe  ->  this relay (verify + filter)  ->  GHL inbound webhook
 //
 // Env vars required in Vercel:
-//   STRIPE_SECRET_KEY      (test-mode sk_test_... first, live later)
-//   STRIPE_WEBHOOK_SECRET  (test-mode signing secret whsec_... first, live later)
+//   STRIPE_SECRET_KEY      (sk_test_... first, live later)
+//   STRIPE_WEBHOOK_SECRET  (whsec_... signing secret, test first, live later)
 //   GHL_WEBHOOK_URL        (your GHL Inbound Webhook trigger URL)
 
 const Stripe = require("stripe");
 
-// We need the raw body to verify Stripe's signature, so disable Vercel's
-// automatic JSON body parsing for this route.
-module.exports.config = {
-  api: {
-    bodyParser: false,
-  },
-};
-
-// Read the raw request body as a buffer
 async function readRawBody(req) {
   const chunks = [];
   for await (const chunk of req) {
@@ -25,16 +16,14 @@ async function readRawBody(req) {
   return Buffer.concat(chunks);
 }
 
-// Only these Stripe events matter to the dunning workflow
 const RELEVANT_EVENTS = new Set([
   "invoice.payment_failed",
   "invoice.paid",
   "invoice.payment_succeeded",
 ]);
 
-module.exports = async function handler(req, res) {
+async function handler(req, res) {
   if (req.method !== "POST") {
-    // Allow a simple GET to confirm the function is alive
     return res.status(200).json({ status: "FSL dunning relay is live" });
   }
 
@@ -72,9 +61,7 @@ module.exports = async function handler(req, res) {
     amount_due: ((invoice.amount_due || 0) / 100).toFixed(2),
     hosted_invoice_url: invoice.hosted_invoice_url || "",
     next_attempt: invoice.next_payment_attempt
-      ? new Date(invoice.next_payment_attempt * 1000)
-          .toISOString()
-          .split("T")[0]
+      ? new Date(invoice.next_payment_attempt * 1000).toISOString().split("T")[0]
       : "",
     subscription_id:
       typeof invoice.subscription === "string" ? invoice.subscription : "",
@@ -97,4 +84,9 @@ module.exports = async function handler(req, res) {
   }
 
   return res.status(200).json({ received: true, forwarded: payload.event });
+}
+
+module.exports = handler;
+module.exports.config = {
+  api: { bodyParser: false },
 };
